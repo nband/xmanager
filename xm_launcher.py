@@ -268,7 +268,7 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
           'RUN python -m pip install --upgrade pip setuptools wheel',
           f'RUN {pip_cmd} google-cloud-storage',
           f'RUN {pip_cmd} ./uncertainty-baselines[jax,models]',
-          f'RUN {pip_cmd} wandb torch seaborn dm-haiku'
+          f'RUN {pip_cmd} wandb torch seaborn dm-haiku',
           'WORKDIR uncertainty-baselines',
         ],
     )
