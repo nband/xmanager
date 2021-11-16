@@ -26,6 +26,7 @@ import random
 import shutil
 import tempfile
 import time
+import asyncio
 from typing import Any, Dict, List, Optional, Text
 
 from absl import app
@@ -107,6 +108,7 @@ flags.DEFINE_string('experiment_name', None,
                     'Experiment name; defaults to timestamp.')
 flags.DEFINE_integer('num_runs', 1,
                      'Number of runs each with a different seed.')
+flags.DEFINE_string('tensorboard', None, 'Tensorboard instance.')
 
 
 FLAGS = flags.FLAGS
@@ -296,9 +298,10 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
     platform = {}
     # num_cpus = metadata.num_cpus
     # memory = metadata.memory
-    # target_num_cpus = 16
+    target_num_cpus = 16
     # target_num_cpus = 33
     # target_num_cpus = 31
+    target_memory = 60
     # target_memory = 60  # n1-standard-16, this works
     # target_memory = 104  # n1-highmem-16, this doesn't work
     # target_memory = 119
@@ -314,7 +317,7 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
     # target_num_cpus, target_memory = 96, 624
 
     # Somehow 33, 209 -> n1-standard-64, with (64, 240), this works
-    target_num_cpus, target_memory = 33, 209
+    # target_num_cpus, target_memory = 33, 209
 
     # And 31, 119 -> n1-standard-32
     # target_num_cpus, target_memory = 31, 119
@@ -342,15 +345,21 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
       platform = {metadata.gpu_type: metadata.num_gpus}
 
     if num_cpus is not None:
-      platform['cpu'] = num_cpus * xm_oss.vCPU
+      # platform['cpu'] = num_cpus * xm_oss.vCPU
+      platform['cpu'] = num_cpus
     if memory is not None:
-      # platform['memory'] = memory * xm_oss.GiB
-      platform['memory'] = memory
+      platform['memory'] = memory * xm_oss.GiB
+      # platform['memory'] = memory
     # executor = xm_local.Caip(requirements=xm_oss.JobRequirements(**platform))
 
     # Create one job per setting in the hyperparameter sweep. The default case
     # is a length 1 sweep with a single argument name "seed".
-    job_group_args = {}
+    # job_group_args = {}
+
+    tensorboard = FLAGS.tensorboard
+    if not tensorboard:
+      tensorboard = caip.client().create_tensorboard('diabetic_retinopathy')
+      tensorboard = asyncio.get_event_loop().run_until_complete(tensorboard)
 
     for ji, sweep_args in enumerate(sweep):
       job_args = args.copy()
@@ -360,6 +369,9 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
         job_args['data_dir'] = os.path.join(job_args['data_dir'], str(ji))
       # Overwrite any values in `args` with the `sweep_args`.
       job_args.update(sweep_args)
+
+      tensorboard_capability = xm_local.TensorboardCapability(
+          name=tensorboard, base_output_directory=job_args['output_dir'])
       logging.info(
           'Launching job %d/%d with args %s.\n',
           ji + 1,
@@ -373,14 +385,15 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
       job = xm_oss.Job(
         executable=executable,
         executor=xm_local.Caip(
-          requirements=xm_oss.JobRequirements(**platform)),
+          requirements=xm_oss.JobRequirements(**platform),
+          tensorboard=tensorboard_capability),
         args=job_args)
-      job_group_args[str(ji)] = job
+      # job_group_args[str(ji)] = job
 
-      # experiment.add(job)
+      experiment.add(job)
 
-    job_group = xm_oss.JobGroup(**job_group_args)
-    experiment.add(job=job_group)
+    # job_group = xm_oss.JobGroup(**job_group_args)
+    # experiment.add(job=job_group)
 
 
 def _generate_hyperparameter_sweep(
