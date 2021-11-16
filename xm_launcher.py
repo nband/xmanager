@@ -200,6 +200,7 @@ def _build_binary_metadata(config):
         'cores based on tpu_topology and platform_str ({}!={} respectively)'
         .format(flag_args['num_cores'], num_cores))
   args = dict(num_cores=num_cores,
+              vm=_get_attr(config, 'vm')
               # use_gpu=use_gpu
               )
   args.update(flag_args)
@@ -296,37 +297,27 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
     # ])
 
     platform = {}
-    # num_cpus = metadata.num_cpus
-    # memory = metadata.memory
-    target_num_cpus = 16
-    # target_num_cpus = 33
-    # target_num_cpus = 31
-    target_memory = 60
-    # target_memory = 60  # n1-standard-16, this works
-    # target_memory = 104  # n1-highmem-16, this doesn't work
-    # target_memory = 119
 
-    # High mem 32?
-    # target_num_cpus = 32
-    # target_memory = 208
-
-    # High mem 64
-    # target_num_cpus, target_memory = 64, 416
-
-    # High mem 96
-    # target_num_cpus, target_memory = 96, 624
-
-    # Somehow 33, 209 -> n1-standard-64, with (64, 240), this works
-    # target_num_cpus, target_memory = 33, 209
-
-    # And 31, 119 -> n1-standard-32
-    # target_num_cpus, target_memory = 31, 119
-
-    # High mem 2
-    # target_num_cpus, target_memory = 1, 4
-
-    # Try for a2 - highgpu - 4g
-    # target_num_cpus, target_memory = 48, 340
+    VM_TO_CPU_MEMORY_TARGETS = {
+      'n1-standard-4': (4, 15),
+      'n1-standard-8': (8, 30),
+      'n1-standard-16': (16, 60),  # Works with TPU-V2
+      'n1-standard-32': (32, 120),
+      'n1-standard-64': (64, 240),  # Works with TPU-V2
+      'n1-standard-96': (96, 360),
+      'n1-highmem-2': (2, 13),
+      'n1-highmem-4': (4, 26),
+      'n1-highmem-8': (8, 52),
+      'n1-highmem-16': (16, 104),
+      'n1-highmem-32': (32, 208),
+      'n1-highmem-64': (64, 416),
+      'n1-highmem-96': (96, 624),
+      'n1-highcpu-16': (16, 14),
+      'n1-highcpu-32': (32, 28),
+      'n1-highcpu-64': (64, 57),
+      'n1-highcpu-96': (96, 86),
+    }
+    target_num_cpus, target_memory = VM_TO_CPU_MEMORY_TARGETS[args['vm']]
 
     num_cpus = (
       min(metadata.num_cpus, target_num_cpus)
