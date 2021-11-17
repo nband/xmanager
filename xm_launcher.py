@@ -270,6 +270,8 @@ def _launch_gcp_experiment(project_dir, binary_path, sweep, args, metadata):
         ] + platform_docker_instructions + [
           'RUN python -m pip install --upgrade pip setuptools wheel',
           f'RUN {pip_cmd} google-cloud-storage',
+          f'RUN {pip_cmd} "jax[tpu]>=0.2.16" -f '
+          f'https://storage.googleapis.com/jax-releases/libtpu_releases.html',
           f'RUN {pip_cmd} ./uncertainty-baselines[jax,models]',
           f'RUN {pip_cmd} wandb torch seaborn dm-haiku',
           'WORKDIR uncertainty-baselines',
