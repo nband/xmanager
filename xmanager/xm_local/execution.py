@@ -17,8 +17,9 @@ import abc
 import asyncio
 import atexit
 from concurrent import futures
+import os
 import threading
-from typing import Any, Awaitable, Callable, List, cast
+from typing import Any, Awaitable, Callable, List, Optional, cast
 
 from absl import logging
 import attr
@@ -78,11 +79,14 @@ class ContainerHandle(LocalExecutionHandle):
   """A handle for referring to the launched container."""
 
   name: str
-  model: containers.Container
+  model: Optional[containers.Container]
   stream_output: bool
   futures_executor: futures.Executor = attr.Factory(futures.ThreadPoolExecutor)
 
   async def wait(self) -> None:
+    if self.model is None:
+      return
+
     response = await asyncio.wrap_future(
         self.futures_executor.submit(self.model.wait))
     status_code = response['StatusCode']
@@ -94,10 +98,15 @@ class ContainerHandle(LocalExecutionHandle):
     raise NotImplementedError
 
   def terminate(self) -> None:
+    if self.model is None:
+      return
+
     self.model.stop()
     self.futures_executor.shutdown(wait=True)
 
   async def monitor(self) -> None:
+    if self.model is None:
+      return
 
     def _stream_chunks() -> None:
       for chunk in self.model.logs(stream=True, follow=True):
@@ -125,6 +134,12 @@ async def _launch_loaded_container_image(
   env_vars = {**executable.env_vars, **job.env_vars}
   options = executor.docker_options or executors.DockerOptions()
 
+  # Add GCP credentials to Local Executor.
+  volumes = options.volumes or {}
+  local_gcloud_config_path = os.path.expanduser('~/.config/gcloud')
+  image_gcloud_config_path = '/root/.config/gcloud'
+  volumes[local_gcloud_config_path] = image_gcloud_config_path
+
   container = instance.run_container(
       name=get_full_job_name(job.name),
       image_id=executable.image_id,
@@ -132,7 +147,8 @@ async def _launch_loaded_container_image(
       args=args,
       env_vars=env_vars,
       ports=options.ports or {},
-      volumes=options.volumes or {},
+      volumes=volumes,
+      interactive=options.interactive,
   )
   return ContainerHandle(
       name=job.name,

@@ -25,6 +25,7 @@ from xmanager import xm_foo
 import abc
 import asyncio
 from concurrent import futures
+import enum
 import functools
 import getpass
 import inspect
@@ -196,9 +197,37 @@ def _work_unit_arguments(
   return deduce_args(job)
 
 
+class Importance(enum.Enum):
+  """How important it is to schedule particular Experiment or ExperimentUnit.
+
+  This is a hint to the scheduler. Not all schedulers take it into account
+  (xm_local doesn't). And even with smart scheduler a less important work unit
+  may run before a more important one e.g. if it uses a less contended resource.
+
+  Unlike ServiceTier, importance only controls preference within a team i.e. how
+  team's resources are divided between team's experiments. It has no effect on
+  resource allocation between teams.
+  """
+
+  # High impact experiments. Try scheduling them even at the cost of significant
+  # reduction of the overall throughput that your experiments get.
+  HIGH = 'high'
+  # The default importance.
+  NORMAL = 'normal'
+  # Prefer to schedule other experiments with higher importance, but in overall
+  # try to maximize throughput.
+  LOW = 'low'
+
+
+@attr.s(auto_attribs=True, kw_only=True)
 class ExperimentUnitRole(abc.ABC):
-  """The role of an experiment unit within the experiment structure."""
-  pass
+  """The role of an experiment unit within the experiment structure.
+
+  Attributes:
+    importance: how important it is to schedule this executable unit comparing
+      to all your executable units (from all your experiments).
+  """
+  importance: Importance = Importance.NORMAL
 
 
 class ExperimentUnit(abc.ABC):
@@ -379,7 +408,7 @@ class ExperimentUnit(abc.ABC):
         annotations=metadata_context.ContextAnnotations())
 
 
-@attr.s(auto_attribs=True)
+@attr.s(auto_attribs=True, kw_only=True)
 class WorkUnitRole(ExperimentUnitRole):
   """An experiment unit with this role is a work unit.
 
@@ -398,7 +427,7 @@ class WorkUnit(ExperimentUnit):
     raise NotImplementedError
 
 
-@attr.s(auto_attribs=True)
+@attr.s(auto_attribs=True, kw_only=True)
 class AuxiliaryUnitRole(ExperimentUnitRole):
   """An experiment unit with this role is an auxiliary unit.
 
@@ -407,8 +436,8 @@ class AuxiliaryUnitRole(ExperimentUnitRole):
   determine the status of the experiment. e.g. Tensorboard
 
   Attributes:
-      termination_delay_secs: How long to keep AUX unit running after experiment
-        completion.
+    termination_delay_secs: How long to keep AUX unit running after experiment
+      completion.
   """
 
   termination_delay_secs: int
@@ -436,12 +465,6 @@ class Experiment(abc.ABC):
     """Returns a unique ID assigned to the experiment."""
     raise NotImplementedError
 
-  def _enter(self) -> None:
-    """Initializes internal state on context manager enter."""
-    self._running_tasks = queue.Queue()
-    self._work_unit_id_predictor = id_predictor.Predictor(1 +
-                                                          self.work_unit_count)
-
   def __enter__(self):
     if asyncio.get_event_loop().is_running():
       raise RuntimeError('When using Experiment from a coroutine please use '
@@ -453,7 +476,14 @@ class Experiment(abc.ABC):
         target=self._event_loop.run_forever, daemon=True)
     self._event_loop_thread.start()
 
-    self._enter()
+    # asyncio.run_coroutine_threadsafe doesn't accept class method and wants it
+    # wrapped in a function.
+    async def async_enter():
+      await self.__aenter__()
+
+    asyncio.run_coroutine_threadsafe(
+        async_enter(), loop=self._event_loop).result()
+
     return self
 
   def _wait_for_tasks(self):
@@ -467,7 +497,9 @@ class Experiment(abc.ABC):
 
   async def __aenter__(self):
     self._event_loop = asyncio.get_event_loop()
-    self._enter()
+    self._running_tasks = queue.Queue()
+    self._work_unit_id_predictor = id_predictor.Predictor(1 +
+                                                          self.work_unit_count)
     return self
 
   async def _await_for_tasks(self):
@@ -481,18 +513,19 @@ class Experiment(abc.ABC):
   def package(
       cls, packageables: Sequence[job_blocks.Packageable] = ()
   ) -> Sequence[job_blocks.Executable]:
-    """Packages executable specs into executables based on the executor specs.
+    """Packages `packageables` & triggers async packaging.
 
-    Builds all given executables specs in parallel. While calling package()
-    multiple times is allowed, that would result in slow sequential build,
-    even if invoked from concurrent threads.
+    This function has 2 usages:
+    - Builds all given executables specs in parallel. While calling package(...)
+      multiple times is allowed, that would result in slow sequential build,
+      even if invoked from concurrent threads.
+    - Triggers packaging of the items enqueued previously with `package_async`.
 
     Args:
-      packageables: A sequence of packageables to build.
+      packageables: A sequence of extra packageables to build synchronously.
 
     Returns:
-      A sequence of packaging results. Order corresponds to the order of input
-      packageables.
+      A sequence of packaging results associated to `packageables` (same order).
     """
     return cls._async_packager.package(packageables)
 
